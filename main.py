@@ -26,10 +26,13 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="请选择学校模板和待检查论文。")
         self.issues = []
         self.logo_path = resource_path("assets/logo.png")
+        self.icon_path = resource_path("assets/app_icon.png")
+        self.qr_path = resource_path("assets/qr.png")
         self.logo_image = None
-        if self.logo_path.exists():
+        self.qr_image = None
+        if self.icon_path.exists():
             try:
-                icon = tk.PhotoImage(file=str(self.logo_path))
+                icon = tk.PhotoImage(file=str(self.icon_path))
                 self.iconphoto(True, icon)
                 self._icon_keep = icon
             except tk.TclError:
@@ -45,8 +48,15 @@ class App(tk.Tk):
                 ttk.Label(brand, image=self.logo_image).pack(side="left")
             except tk.TclError:
                 ttk.Label(brand, text="常青文创设计", font=("Microsoft YaHei", 20, "bold"), foreground="#071952").pack(side="left")
-        ttk.Label(brand, text="论文格式检查助手\n本地免安装版", font=("Microsoft YaHei", 13, "bold"), foreground="#071952").pack(side="left", padx=18)
-        ttk.Label(brand, text="常青文创设计", foreground="#9aa6bd", font=("Microsoft YaHei", 18)).pack(side="right")
+        contact = ttk.Frame(brand)
+        contact.pack(side="right", padx=(18, 4))
+        ttk.Label(contact, text="合作联系", foreground="#071952", font=("Microsoft YaHei", 15, "bold")).pack(side="left", padx=(0, 12))
+        if self.qr_path.exists():
+            try:
+                self.qr_image = tk.PhotoImage(file=str(self.qr_path)).subsample(6, 6)
+                ttk.Label(contact, image=self.qr_image).pack(side="left")
+            except tk.TclError:
+                ttk.Label(contact, text="扫码添加微信", foreground="#657083").pack(side="left")
 
         top = ttk.Frame(self, padding=12)
         top.pack(fill="x")
