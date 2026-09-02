@@ -60,10 +60,10 @@ class App(tk.Tk):
 
         top = ttk.Frame(self, padding=12)
         top.pack(fill="x")
-        ttk.Label(top, text="学校模板（.docx）").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="学校模板（.doc/.docx）").grid(row=0, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.template_var).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(top, text="选择", command=lambda: self._choose(self.template_var)).grid(row=0, column=2)
-        ttk.Label(top, text="待检查论文（.docx）").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(top, text="待检查论文（.doc/.docx）").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(top, textvariable=self.paper_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(top, text="选择", command=lambda: self._choose(self.paper_var)).grid(row=1, column=2, pady=(8, 0))
         self.run_btn = ttk.Button(top, text="开始检查", command=self._run)
@@ -98,7 +98,7 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=5).pack(fill="x", side="bottom")
 
     def _choose(self, variable):
-        path = filedialog.askopenfilename(filetypes=[("Word 文档", "*.docx"), ("所有文件", "*.*")])
+        path = filedialog.askopenfilename(filetypes=[("Word 文档", "*.doc;*.docx"), ("所有文件", "*.*")])
         if path:
             variable.set(path)
 
@@ -107,8 +107,8 @@ class App(tk.Tk):
         if not template or not paper:
             messagebox.showwarning("缺少文件", "请先选择学校模板和待检查论文。")
             return
-        if Path(template).suffix.lower() != ".docx" or Path(paper).suffix.lower() != ".docx":
-            messagebox.showwarning("文件格式", "首版支持 .docx。请先用 Word 或 WPS 将旧版 .doc 另存为 .docx。")
+        if Path(template).suffix.lower() not in {".doc", ".docx"} or Path(paper).suffix.lower() not in {".doc", ".docx"}:
+            messagebox.showwarning("文件格式", "请选择 .doc 或 .docx 文件。")
             return
         self.run_btn.config(state="disabled")
         self.status_var.set("正在解析文档，请稍候……")

@@ -11,6 +11,8 @@ from pathlib import Path
 from statistics import median
 from typing import Iterable
 from zipfile import ZipFile
+import subprocess
+import tempfile
 
 from docx import Document
 from docx.document import Document as DocumentType
@@ -100,6 +102,13 @@ HEADING_PATTERNS = [
 def heading_level(paragraph):
     text = paragraph.text.strip()
     style = paragraph.style.name if paragraph.style else ""
+    # Word 的大纲级别是真正的结构信息，优先于样式名称和编号猜测。
+    ppr = paragraph._p.pPr
+    if ppr is not None and ppr.outlineLvl is not None:
+        try:
+            return int(ppr.outlineLvl.val) + 1
+        except (TypeError, ValueError):
+            pass
     m = re.search(r"(?:Heading|标题)\s*(\d+)", style, re.I)
     if m:
         return int(m.group(1))
@@ -178,10 +187,45 @@ class ThesisAnalyzer:
     def __init__(self, template_path: str | Path, paper_path: str | Path):
         self.template_path = Path(template_path)
         self.paper_path = Path(paper_path)
-        self.template = Document(self.template_path)
-        self.paper = Document(self.paper_path)
+        self._converted = []
+        self.template_docx_path = self._docx_path(self.template_path)
+        self.paper_docx_path = self._docx_path(self.paper_path)
+        self.template = Document(self.template_docx_path)
+        self.paper = Document(self.paper_docx_path)
         self.issues: list[Issue] = []
         self.template_styles = _style_reference(self.template)
+        self.template_heading_texts = self._template_heading_texts()
+        self.template_comment_count = len(_comments(self.template_docx_path))
+
+    def _docx_path(self, path: Path):
+        if path.suffix.lower() == ".docx":
+            return path
+        if path.suffix.lower() != ".doc":
+            raise ValueError("仅支持 .doc 或 .docx 文件")
+        # 旧版 .doc 通过本机已安装的 Microsoft Word 转为临时 docx，原文件不被修改。
+        try:
+            import win32com.client  # type: ignore
+            fd, target = tempfile.mkstemp(suffix=".docx")
+            Path(target).unlink(missing_ok=True)
+            word = win32com.client.DispatchEx("Word.Application")
+            word.Visible = False
+            doc = word.Documents.Open(str(path.resolve()), ReadOnly=True)
+            doc.SaveAs2(str(target), FileFormat=16)
+            doc.Close(False)
+            word.Quit()
+            self._converted.append(target)
+            return Path(target)
+        except Exception as exc:
+            raise ValueError("无法读取 .doc：请在此电脑安装 Microsoft Word，或先另存为 .docx。") from exc
+
+    def _template_heading_texts(self):
+        result = {1: set(), 2: set(), 3: set(), 4: set()}
+        for p in self.template.paragraphs:
+            level = heading_level(p)
+            text = _normalize_heading(p.text)
+            if level in result and text and not _is_toc(p):
+                result[level].add(text)
+        return result
 
     def add(self, severity, category, location, message, actual="", expected="", suggestion=""):
         self.issues.append(Issue(severity, category, location, message, str(actual), str(expected), suggestion))
@@ -195,6 +239,7 @@ class ThesisAnalyzer:
         self._citations()
         self._fields()
         self._teacher_comments()
+        self._status()
         order = {"严重": 0, "警告": 1, "提示": 2}
         self.issues.sort(key=lambda x: (order.get(x.severity, 9), x.category, x.location))
         return self.issues
@@ -241,6 +286,10 @@ class ThesisAnalyzer:
             style = p.style.name if p.style else ""
             if style.lower() == "normal" and level <= 3:
                 self.add("提示", "标题格式", loc, "疑似标题使用了正文样式 Normal", style, f"模板{level}级标题样式", "应用对应标题样式，便于目录和交叉引用自动更新。")
+            # 模板文字要求独立于模板中的段落位置/域：只比较同级标题文字集合。
+            expected_texts = self.template_heading_texts.get(level, set())
+            if expected_texts and _normalize_heading(p.text) not in expected_texts:
+                self.add("提示", "标题文字", loc, "标题文字未按模板同级文字要求识别", _normalize_heading(p.text), "模板同级标题文字集合", "按学校模板的标题文字和编号规则核对，不要只依赖样式。")
             m = re.match(r"^(\d+(?:\.\d+){0,3})", p.text.strip())
             if m:
                 parts = tuple(map(int, m.group(1).split(".")))
@@ -289,14 +338,19 @@ class ThesisAnalyzer:
                     self.add("警告", "图表题注", f"第{ch}章", f"{kind}题注编号不连续", seqs, list(range(1, max(seqs)+1)), "检查缺失或误编号的题注。")
 
     def _citations(self):
-        text = "\n".join(p.text for p in self.paper.paragraphs)
+        # 参考文献表和目录中的编号不是正文引用；只在正文部分识别。
+        paragraphs = list(self.paper.paragraphs)
+        ref_start = next((i for i,p in enumerate(paragraphs) if p.text.strip() in {"参考文献", "参考文献表"}), len(paragraphs))
+        body = paragraphs[:ref_start]
+        text = "\n".join(p.text for p in body if not _is_toc(p))
         refs = []
-        for p in self.paper.paragraphs:
-            m = re.match(r"^\s*\[(\d+)\]", p.text)
+        for p in paragraphs[ref_start + 1:]:
+            m = re.match(r"^\s*\[(\d+)\]\s*", p.text)
             if m:
                 refs.append(int(m.group(1)))
         cites = []
-        for m in re.finditer(r"\[(\d+(?:\s*[-—,，]\s*\d+)*)\]", text):
+        # 必须位于正文语境中：方括号内为数字且前后不是参考文献条目/目录页码。
+        for m in re.finditer(r"(?<![A-Za-z])\[(\d+(?:\s*[-—,，]\s*\d+)*)\](?!\d)", text):
             raw = m.group(1)
             for n in re.findall(r"\d+", raw):
                 cites.append(int(n))
@@ -312,15 +366,20 @@ class ThesisAnalyzer:
             self.add("提示", "引用与参考文献", "参考文献", "未识别到以[1]开头的顺序编码参考文献", "无", "按学校要求判断", "若采用顺序编码制，请核对参考文献编号格式。")
 
     def _fields(self):
-        t, p = _field_codes(self.template_path), _field_codes(self.paper_path)
+        t, p = _field_codes(self.template_docx_path), _field_codes(self.paper_docx_path)
         if t["PAGE"] and not p["PAGE"]:
             self.add("严重", "页码", "页眉页脚", "模板包含页码域，但论文未检出 PAGE 页码域", "未检出", "存在 PAGE 域", "检查页码是否被手工输入或误删。")
         if t["TOC"] and not p["TOC"]:
             self.add("警告", "目录", "目录", "模板使用自动目录域，但论文未检出 TOC 域", "未检出", "存在 TOC 域", "使用 Word 自动目录并在定稿前更新域。")
 
     def _teacher_comments(self):
-        for cid, anchor, comment in _comments(self.paper_path):
+        for cid, anchor, comment in _comments(self.paper_docx_path):
             self.add("提示", "教师批注", f"批注{cid}：{anchor[:28]}", comment or "存在空批注", anchor, "按教师意见处理", "处理后在 Word 中回复或删除已解决批注。")
+
+    def _status(self):
+        severe = sum(1 for x in self.issues if x.severity == "严重")
+        warnings = sum(1 for x in self.issues if x.severity == "警告")
+        self.add("提示", "检查状态", "检查摘要", "模板已读取；教师批注已读取；格式检查结论：" + ("不合格" if severe or warnings else "合格"), f"严重{severe}，警告{warnings}", "严重和警告均为0时合格", "优先处理严重问题，再处理警告；提示项用于人工复核。")
 
 
 def summary(issues: Iterable[Issue]):
@@ -329,15 +388,17 @@ def summary(issues: Iterable[Issue]):
 
 
 def export_json(path, issues):
-    Path(path).write_text(json.dumps({"summary": summary(issues), "issues": [asdict(i) for i in issues]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    s = summary(issues)
+    Path(path).write_text(json.dumps({"report_type":"论文格式检查明细报告", "conclusion":"合格" if s["严重"] == 0 and s["警告"] == 0 else "不合格", "summary": s, "issues": [asdict(i) for i in issues]}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def export_csv(path, issues):
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["严重程度", "类别", "位置", "问题", "当前情况", "模板要求", "修改建议"])
+        s = summary(issues)
+        w.writerow(["报告类型", "结论", "严重程度", "类别", "位置", "问题", "当前情况", "模板要求", "修改建议"])
         for i in issues:
-            w.writerow([i.severity, i.category, i.location, i.message, i.actual, i.expected, i.suggestion])
+            w.writerow(["论文格式检查明细报告", "合格" if s["严重"] == 0 and s["警告"] == 0 else "不合格", i.severity, i.category, i.location, i.message, i.actual, i.expected, i.suggestion])
 
 
 def export_html(path, issues, template_name="", paper_name="", logo_path=None):
