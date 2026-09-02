@@ -13,6 +13,7 @@ from typing import Iterable
 from zipfile import ZipFile
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from docx import Document
 from docx.document import Document as DocumentType
@@ -124,7 +125,10 @@ def heading_level(paragraph):
 
 def _is_toc(paragraph):
     style = paragraph.style.name.lower() if paragraph.style else ""
-    return style.startswith("toc") or style.startswith("目录")
+    text = paragraph.text.strip()
+    # 目录样式可能被用户改成正文样式；制表符/点引导线+页码是稳定的内容特征。
+    return (style.startswith("toc") or style.startswith("目录") or
+            bool(re.search(r"(?:\.{2,}|。{2,}|…{2,}|\t)\s*\d{1,4}$", text)))
 
 
 def _normalize_heading(text):
@@ -175,6 +179,19 @@ def _comments(path: Path):
     return results
 
 
+def _comments_safe(path: Path, timeout_seconds=12):
+    """批注 XML 偶尔异常膨胀；超时后返回明确状态，避免界面无限等待。"""
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_comments, path)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeout:
+        future.cancel()
+        return [("?", "批注解析超时", "文档批注结构过大或损坏，已跳过批注细节解析")]
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _field_codes(path: Path):
     with ZipFile(path) as z:
         root = etree.fromstring(z.read("word/document.xml"))
@@ -195,7 +212,7 @@ class ThesisAnalyzer:
         self.issues: list[Issue] = []
         self.template_styles = _style_reference(self.template)
         self.template_heading_texts = self._template_heading_texts()
-        self.template_comment_count = len(_comments(self.template_docx_path))
+        self.template_comment_count = len(_comments_safe(self.template_docx_path))
 
     def _docx_path(self, path: Path):
         if path.suffix.lower() == ".docx":
@@ -281,10 +298,13 @@ class ThesisAnalyzer:
                 for key in ["east_asia", "size_pt", "bold"]:
                     if af.get(key) != ef.get(key) and ef.get(key) is not None:
                         mismatches.append("字体." + key)
-                if mismatches:
+                # 已明确设置 Word 大纲级别时，样式名不再作为判定依据；避免“样式不同但大纲正确”的误报。
+                has_outline = p._p.pPr is not None and p._p.pPr.outlineLvl is not None
+                if mismatches and not has_outline:
                     self.add("警告", "标题格式", loc, "标题格式与模板同级标题的常用格式不一致", "、".join(mismatches), "模板同级标题格式", "核对字体、字号、加粗、缩进、对齐和段落间距。")
             style = p.style.name if p.style else ""
-            if style.lower() == "normal" and level <= 3:
+            has_outline = p._p.pPr is not None and p._p.pPr.outlineLvl is not None
+            if style.lower() == "normal" and level <= 3 and not has_outline:
                 self.add("提示", "标题格式", loc, "疑似标题使用了正文样式 Normal", style, f"模板{level}级标题样式", "应用对应标题样式，便于目录和交叉引用自动更新。")
             # 模板文字要求独立于模板中的段落位置/域：只比较同级标题文字集合。
             expected_texts = self.template_heading_texts.get(level, set())
@@ -333,7 +353,8 @@ class ThesisAnalyzer:
             for _, text, ch, seq in items:
                 by_chapter.setdefault(ch, []).append((seq, text))
             for ch, values in by_chapter.items():
-                seqs = sorted(x[0] for x in values if x[0])
+                # “图1”这类无分节编号不参与“1-1、1-2、2-1”连续性判断。
+                seqs = sorted(x[0] for x in values if x[0] > 0)
                 if seqs and seqs != list(range(1, max(seqs) + 1)):
                     self.add("警告", "图表题注", f"第{ch}章", f"{kind}题注编号不连续", seqs, list(range(1, max(seqs)+1)), "检查缺失或误编号的题注。")
 
@@ -341,10 +362,14 @@ class ThesisAnalyzer:
         # 参考文献表和目录中的编号不是正文引用；只在正文部分识别。
         paragraphs = list(self.paper.paragraphs)
         ref_start = next((i for i,p in enumerate(paragraphs) if p.text.strip() in {"参考文献", "参考文献表"}), len(paragraphs))
+        # 没有独立“参考文献”标题时，以连续的 [1]、[2] 条目定位文末参考文献区。
+        first_ref = next((i for i,p in enumerate(paragraphs) if re.match(r"^\s*\[1\]\s*", p.text)), len(paragraphs))
+        if first_ref < ref_start:
+            ref_start = first_ref
         body = paragraphs[:ref_start]
         text = "\n".join(p.text for p in body if not _is_toc(p))
         refs = []
-        for p in paragraphs[ref_start + 1:]:
+        for p in paragraphs[ref_start:]:
             m = re.match(r"^\s*\[(\d+)\]\s*", p.text)
             if m:
                 refs.append(int(m.group(1)))
@@ -373,7 +398,7 @@ class ThesisAnalyzer:
             self.add("警告", "目录", "目录", "模板使用自动目录域，但论文未检出 TOC 域", "未检出", "存在 TOC 域", "使用 Word 自动目录并在定稿前更新域。")
 
     def _teacher_comments(self):
-        for cid, anchor, comment in _comments(self.paper_docx_path):
+        for cid, anchor, comment in _comments_safe(self.paper_docx_path):
             self.add("提示", "教师批注", f"批注{cid}：{anchor[:28]}", comment or "存在空批注", anchor, "按教师意见处理", "处理后在 Word 中回复或删除已解决批注。")
 
     def _status(self):
