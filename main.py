@@ -18,6 +18,8 @@ def resource_path(relative):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        # 明确指定中文界面字体，避免部分 Windows 环境的 Tk 默认字体出现方框/乱码。
+        self.option_add("*Font", ("Microsoft YaHei UI", 10))
         self.title("论文格式检查助手")
         self.geometry("1180x720")
         self.minsize(920, 600)

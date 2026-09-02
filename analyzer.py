@@ -142,7 +142,10 @@ def _style_reference(doc: DocumentType):
     for p in doc.paragraphs:
         if not p.text.strip() or _is_toc(p):
             continue
-        level = heading_level(p)
+        # 模板格式样本只采信显式标题样式或 Word 大纲级别，避免正文编号被当成标题样本。
+        ppr = p._p.pPr
+        explicit = (ppr is not None and ppr.outlineLvl is not None) or bool(re.search(r"(?:Heading|标题)\s*\d+", p.style.name if p.style else "", re.I))
+        level = heading_level(p) if explicit else None
         samples[level or 0].append(_paragraph_signature(p))
     for level, items in samples.items():
         if not items:
@@ -328,17 +331,19 @@ class ThesisAnalyzer:
             previous = level
             expected = self.template_styles.get(level)
             actual = _paragraph_signature(p)
-            if expected:
+            ppr = p._p.pPr
+            has_outline = ppr is not None and ppr.outlineLvl is not None
+            if expected and not has_outline:
                 mismatches = []
                 for key in ["alignment", "first_line_indent_cm", "space_before_pt", "space_after_pt", "line_spacing"]:
-                    if actual.get(key) != expected.get(key):
+                    av, ev = actual.get(key), expected.get(key)
+                    if av is not None and ev is not None and (isinstance(av, (int,float)) and isinstance(ev, (int,float)) and abs(av-ev) > 0.08 or av != ev):
                         mismatches.append(key)
                 af, ef = actual.get("font", {}), expected.get("font", {})
                 for key in ["east_asia", "size_pt", "bold"]:
-                    if af.get(key) != ef.get(key) and ef.get(key) is not None:
+                    if af.get(key) is not None and ef.get(key) is not None and af.get(key) != ef.get(key):
                         mismatches.append("字体." + key)
                 # 已明确设置 Word 大纲级别时，样式名不再作为判定依据；避免“样式不同但大纲正确”的误报。
-                has_outline = p._p.pPr is not None and p._p.pPr.outlineLvl is not None
                 if mismatches and not has_outline:
                     self.add("警告", "标题格式", loc, "标题格式与模板同级标题的常用格式不一致", "、".join(mismatches), "模板同级标题格式", "核对字体、字号、加粗、缩进、对齐和段落间距。")
             style = p.style.name if p.style else ""
@@ -370,7 +375,13 @@ class ThesisAnalyzer:
             self.add("警告", "目录", "目录", "目录条目在正文标题中未找到", x, "正文存在对应标题", "更新目录，或检查正文标题文字是否已修改。")
         for x in heading_set - toc_set:
             if len(x) > 2:
+                # 附录中的说明性小标题/正文标题通常不列入学校目录，除非目录中已有该条目。
+                if x.startswith("附录") or getattr(self, "_is_appendix_heading", lambda _: False)(x):
+                    continue
                 self.add("提示", "目录", "正文", "正文标题未出现在目录中", x, "目录包含该级标题", "确认该标题是否应进入目录，并更新目录域。")
+
+    def _is_appendix_heading(self, text):
+        return bool(re.match(r"^(附录|附件|附表|附图)", text))
 
     def _captions(self):
         found = {"图": [], "表": []}
