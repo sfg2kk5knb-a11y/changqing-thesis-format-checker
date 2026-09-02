@@ -200,6 +200,20 @@ def _field_codes(path: Path):
     return {"PAGE": joined.count("PAGE"), "TOC": joined.count("TOC"), "REF": joined.count(" REF ")}
 
 
+def _footnote_info(path: Path):
+    """读取脚注引用与脚注正文，避免只看正文角标。"""
+    with ZipFile(path) as z:
+        names = set(z.namelist())
+        if "word/footnotes.xml" not in names:
+            return {"references": 0, "notes": 0}
+        root = etree.fromstring(z.read("word/footnotes.xml"))
+        notes = [n for n in root.xpath("//w:footnote", namespaces=NS)
+                 if n.get(f"{{{W}}}id") not in {"-1", "0"}]
+        doc = etree.fromstring(z.read("word/document.xml"))
+        refs = doc.xpath("//w:footnoteReference", namespaces=NS)
+        return {"references": len(refs), "notes": len(notes)}
+
+
 class ThesisAnalyzer:
     def __init__(self, template_path: str | Path, paper_path: str | Path):
         self.template_path = Path(template_path)
@@ -255,6 +269,8 @@ class ThesisAnalyzer:
         self._captions()
         self._citations()
         self._fields()
+        self._headers_footers()
+        self._footnotes()
         self._teacher_comments()
         self._status()
         order = {"严重": 0, "警告": 1, "提示": 2}
@@ -273,6 +289,29 @@ class ThesisAnalyzer:
                 pv, tv = _cm(getattr(ps, name)), _cm(getattr(ts, name))
                 if pv is not None and tv is not None and abs(pv - tv) > 0.08:
                     self.add("警告", "页面设置", f"第{i+1}节", f"{label}与模板不一致", f"{pv} cm", f"{tv} cm", "按模板调整本节页面设置。")
+
+    def _headers_footers(self):
+        def texts(doc):
+            out = []
+            for section in doc.sections:
+                for part in (section.header, section.first_page_header, section.even_page_header,
+                             section.footer, section.first_page_footer, section.even_page_footer):
+                    out.extend(p.text.strip() for p in part.paragraphs if p.text.strip())
+            return out
+        t, p = texts(self.template), texts(self.paper)
+        if t and not p:
+            self.add("警告", "页眉页脚", "页眉页脚", "模板包含页眉或页脚文字，论文未识别到", "未识别", "应保留模板页眉页脚文字", "检查页眉页脚是否被删除或转为图片。")
+        elif t:
+            missing = [x for x in t if x not in p]
+            if missing:
+                self.add("警告", "页眉页脚", "页眉页脚", "论文缺少模板页眉页脚文字", "；".join(missing[:5]), "与模板文字一致", "检查不同节、首页和奇偶页页眉页脚内容。")
+
+    def _footnotes(self):
+        t, p = _footnote_info(self.template_docx_path), _footnote_info(self.paper_docx_path)
+        if t["notes"] and not p["notes"]:
+            self.add("警告", "脚注", "脚注", "模板存在脚注，论文未识别到脚注", p["notes"], t["notes"], "检查脚注是否被删除；脚注不是正文角标。")
+        elif p["references"] > p["notes"]:
+            self.add("警告", "脚注", "脚注", "脚注引用与脚注正文数量不一致", f"引用{p['references']}，正文{p['notes']}", "数量一致", "检查损坏或缺失的脚注定义。")
 
     def _headings(self):
         previous = 0
@@ -437,9 +476,9 @@ def export_html(path, issues, template_name="", paper_name="", logo_path=None):
         logo64 = base64.b64encode(Path(logo_path).read_bytes()).decode("ascii")
     watermark = f"body:after{{content:'';position:fixed;inset:20% 8%;background:url(data:image/png;base64,{logo64}) center/72% no-repeat;opacity:.035;z-index:-1}}" if logo64 else ""
     brand = f"<img alt='常青文创设计' src='data:image/png;base64,{logo64}' style='width:300px;max-height:85px;object-fit:contain'>" if logo64 else "<b>常青文创设计</b>"
-    page = f"""<!doctype html><meta charset='utf-8'><title>常青文创论文格式检查报告</title>
-<style>body{{font-family:'Microsoft YaHei',sans-serif;margin:32px;color:#222}}{watermark}h1{{font-size:24px;color:#071952}}.cards{{display:flex;gap:12px;margin:18px 0}}.card{{padding:12px 20px;border-radius:8px;background:#f4f6f8}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border:1px solid #d8dde3;padding:8px;vertical-align:top}}th{{background:#eef2f6;position:sticky;top:0}}td:first-child{{white-space:nowrap}}</style>
+    page = f"""<!doctype html><html lang='zh-CN'><head><meta charset='UTF-8'><meta http-equiv='Content-Type' content='text/html; charset=UTF-8'><title>常青文创论文格式检查报告</title>
+<style>body{{font-family:'Microsoft YaHei','SimSun','Noto Sans CJK SC',sans-serif;margin:32px;color:#222}}{watermark}h1{{font-size:24px;color:#071952}}.cards{{display:flex;gap:12px;margin:18px 0}}.card{{padding:12px 20px;border-radius:8px;background:#f4f6f8}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border:1px solid #d8dde3;padding:8px;vertical-align:top}}th{{background:#eef2f6;position:sticky;top:0}}td:first-child{{white-space:nowrap}}</style></head><body>
 {brand}<h1>论文格式检查报告</h1><p>模板：{html.escape(template_name)}<br>论文：{html.escape(paper_name)}</p>
 <div class='cards'><div class='card'>严重：{s['严重']}</div><div class='card'>警告：{s['警告']}</div><div class='card'>提示：{s['提示']}</div><div class='card'>总计：{s['总计']}</div></div>
-<table><thead><tr><th>程度</th><th>类别</th><th>位置</th><th>问题</th><th>当前情况</th><th>模板要求</th><th>修改建议</th></tr></thead><tbody>{rows}</tbody></table>"""
+<table><thead><tr><th>程度</th><th>类别</th><th>位置</th><th>问题</th><th>当前情况</th><th>模板要求</th><th>修改建议</th></tr></thead><tbody>{rows}</tbody></table></body></html>"""
     Path(path).write_text(page, encoding="utf-8")
