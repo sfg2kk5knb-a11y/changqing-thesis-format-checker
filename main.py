@@ -28,6 +28,7 @@ class App(tk.Tk):
         self.logo_path = resource_path("assets/logo.png")
         self.icon_path = resource_path("assets/app_icon.png")
         self.qr_path = resource_path("assets/qr.png")
+        self.feedback_qr_path = resource_path("assets/feedback_qr.png")
         self.logo_image = None
         self.qr_image = None
         if self.icon_path.exists():
@@ -50,13 +51,22 @@ class App(tk.Tk):
                 ttk.Label(brand, text="常青文创设计", font=("Microsoft YaHei", 20, "bold"), foreground="#071952").pack(side="left")
         contact = ttk.Frame(brand)
         contact.pack(side="right", padx=(18, 4))
-        ttk.Label(contact, text="合作联系", foreground="#071952", font=("Microsoft YaHei", 15, "bold")).pack(side="left", padx=(0, 12))
+        ttk.Label(contact, text="合作联系", foreground="#071952", font=("Microsoft YaHei", 13, "bold")).pack(side="left", padx=(0, 8))
         if self.qr_path.exists():
             try:
-                self.qr_image = tk.PhotoImage(file=str(self.qr_path)).subsample(6, 6)
+                self.qr_image = tk.PhotoImage(file=str(self.qr_path)).subsample(7, 7)
                 ttk.Label(contact, image=self.qr_image).pack(side="left")
             except tk.TclError:
                 ttk.Label(contact, text="扫码添加微信", foreground="#657083").pack(side="left")
+        feedback = ttk.Frame(brand)
+        feedback.pack(side="right", padx=(8, 4))
+        ttk.Label(feedback, text="用户使用问题反馈群", foreground="#071952", font=("Microsoft YaHei", 11, "bold")).pack(side="left", padx=(0, 8))
+        if self.feedback_qr_path.exists():
+            try:
+                self.feedback_qr_image = tk.PhotoImage(file=str(self.feedback_qr_path)).subsample(7, 7)
+                ttk.Label(feedback, image=self.feedback_qr_image).pack(side="left")
+            except tk.TclError:
+                ttk.Label(feedback, text="扫码进群", foreground="#657083").pack(side="left")
 
         top = ttk.Frame(self, padding=12)
         top.pack(fill="x")
