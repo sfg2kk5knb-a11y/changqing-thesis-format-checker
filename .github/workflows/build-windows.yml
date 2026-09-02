@@ -3,39 +3,43 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
       contents: read
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
+          python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-
-      - name: Restore branded logo
+      - name: Restore branded logo asset
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path assets | Out-Null
           [IO.File]::WriteAllBytes("assets/logo.png", [Convert]::FromBase64String((Get-Content "assets/logo.b64" -Raw)))
-
-      - name: Build Windows EXE
-        run: >
+          [IO.File]::WriteAllBytes("assets/qr.png", [Convert]::FromBase64String((Get-Content "assets/qr.b64" -Raw)))
+          [IO.File]::WriteAllBytes("assets/app_icon.png", [Convert]::FromBase64String((Get-Content "assets/app_icon.b64" -Raw)))
+          [IO.File]::WriteAllBytes("assets/app.ico", [Convert]::FromBase64String((Get-Content "assets/app_icon_ico.b64" -Raw)))
+      - name: Build branded portable executable
+        run: >-
           pyinstaller --noconfirm --clean --onefile --windowed
           --name "常青文创论文格式检查助手"
-          --add-data "assets/logo.png;assets"
+          --icon "assets/app.ico"
+          --add-data "assets;assets"
           main.py
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "dist/常青文创论文格式检查助手.exe"
+          if (!(Test-Path $exe)) { throw "EXE was not generated" }
+          if ((Get-Item $exe).Length -lt 1000000) { throw "EXE size is unexpectedly small" }
+          Get-FileHash $exe -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
         with:
           name: 常青文创论文格式检查助手-Windows-x64
           path: dist/常青文创论文格式检查助手.exe
