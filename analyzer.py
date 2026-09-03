@@ -97,6 +97,8 @@ HEADING_PATTERNS = [
     (2, re.compile(r"^(\d+\.\d+)(?!\.)|^[（(][一二三四五六七八九十]+[）)]")),
     (3, re.compile(r"^(\d+\.\d+\.\d+)|^\d+[.、](?!\d)")),
     (4, re.compile(r"^\d+\.\d+\.\d+\.\d+")),
+    (5, re.compile(r"^\d+\.\d+\.\d+\.\d+\.\d+")),
+    (6, re.compile(r"^\d+\.\d+\.\d+\.\d+\.\d+\.\d+")),
 ]
 
 
@@ -113,6 +115,10 @@ def heading_level(paragraph):
     m = re.search(r"(?:Heading|标题)\s*(\d+)", style, re.I)
     if m:
         return int(m.group(1))
+    # WPS 有时只保留编号而没有样式名；按编号点号层数识别到 6 级。
+    m = re.match(r"^(\d+(?:\.\d+){1,5})(?:\s|、|\.)", text)
+    if m:
+        return min(6, m.group(1).count(".") + 1)
     for level, pattern in reversed(HEADING_PATTERNS):
         if pattern.search(text) and len(text) <= 80:
             # 单独的“1.”常见于问卷题号；含制表符、问号或以冒号结束时不按标题处理。
@@ -267,7 +273,8 @@ class ThesisAnalyzer:
         self.issues: list[Issue] = []
         self.template_styles = _style_reference(self.template)
         self.template_heading_texts = self._template_heading_texts()
-        self.template_text_rules = any(re.search(r"(一级|二级|三级|四级|正文|页眉|页脚).{0,30}(字体|字号|加粗|居中|缩进|目录)", p.text, re.I) for p in self.template.paragraphs)
+        rule_text = "\n".join(p.text for p in self.template.paragraphs)
+        self.template_text_rules = bool(re.search(r"(一级|二级|三级|四级|五级|六级|正文|页眉|页脚).{0,80}(字体|字号|加粗|居中|缩进|目录|行距)", rule_text, re.I) or re.search(r"(字体|字号|加粗|居中|缩进|目录|行距).{0,80}(一级|二级|三级|四级|五级|六级|正文)", rule_text, re.I))
         self.template_comment_count = len(_comments_safe(self.template_docx_path))
 
     def _docx_path(self, path: Path):
@@ -472,20 +479,20 @@ class ThesisAnalyzer:
         found = {"图": [], "表": []}
         for i, p in enumerate(self.paper.paragraphs, 1):
             text = p.text.strip()
-            m = re.match(r"^(图|表)\s*(\d+)(?:[-－—.]?(\d+))?", text)
+            m = re.match(r"^(图|表)\s*(\d+)(?:[-－—.]?(\d+))?\s*([（(]?[a-zA-Z][）)]?)?", text)
             # 题注通常是短独立段落；以“图X体现/表X显示”开头的正文说明不能当作题注。
             narrative = re.match(r"^(图|表)\s*\d+(?:[-－—.]?\d+)?\s*(体现|表明|显示|说明|反映|可见|可以)", text)
             if m and len(text) <= 70 and not narrative:
-                found[m.group(1)].append((i, text, int(m.group(2)), int(m.group(3) or 0)))
+                found[m.group(1)].append((i, text, int(m.group(2)), int(m.group(3) or 0), (m.group(4) or "").lower()))
         for kind, items in found.items():
             seen = set()
-            for i, text, chapter, seq in items:
-                key = (chapter, seq)
+            for i, text, chapter, seq, sub in items:
+                key = (chapter, seq, sub)
                 if key in seen:
                     self.add("严重", "图表题注", f"段落{i}：{text[:35]}", f"{kind}题注编号重复", f"{chapter}-{seq}", "编号唯一", "重新编号并同步更新正文引用。")
                 seen.add(key)
             by_chapter = {}
-            for _, text, ch, seq in items:
+            for _, text, ch, seq, sub in items:
                 by_chapter.setdefault(ch, []).append((seq, text))
             for ch, values in by_chapter.items():
                 # “图1”这类无分节编号不参与“1-1、1-2、2-1”连续性判断。
@@ -518,6 +525,9 @@ class ThesisAnalyzer:
             raw = m.group(1)
             for n in re.findall(r"\d+", raw):
                 cites.append(int(n))
+        # 著者—年份制（中文或英文作者，圆括号/中文括号均可），仅作引用存在性记录，不与顺序编码混校验。
+        author_year = re.compile(r"[（(][^（）()\n]{1,40}[,，]\s*19\d{2}|20\d{2}[）)]")
+        author_year_cites = len(author_year.findall(text))
         if refs:
             refset, citeset = set(refs), set(cites)
             for n in sorted(citeset - refset):
@@ -526,8 +536,10 @@ class ThesisAnalyzer:
                 self.add("警告", "引用与参考文献", "参考文献", f"参考文献[{n}]未在正文中检出引用", f"[{n}]", "正文至少引用一次", "核对是否漏引或编号格式无法识别。")
             if refs != list(range(1, max(refs) + 1)):
                 self.add("警告", "引用与参考文献", "参考文献", "参考文献编号不连续或顺序异常", refs, list(range(1, max(refs)+1)), "按正文首次引用顺序核对编号。")
-        else:
+        elif not author_year_cites:
             self.add("提示", "引用与参考文献", "参考文献", "未识别到以[1]开头的顺序编码参考文献", "无", "按学校要求判断", "若采用顺序编码制，请核对参考文献编号格式。")
+        elif author_year_cites:
+            self.add("提示", "引用与参考文献", "正文", f"已识别到著者—年份制引用（{author_year_cites}处）", "著者—年份", "与文末作者、年份对应", "核对作者姓名、年份及文末参考文献是否一一对应。")
 
     def _fields(self):
         t, p = _field_codes(self.template_docx_path), _field_codes(self.paper_docx_path)
