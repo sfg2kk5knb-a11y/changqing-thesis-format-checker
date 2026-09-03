@@ -132,7 +132,10 @@ def _is_toc(paragraph):
 
 
 def _normalize_heading(text):
-    text = re.sub(r"\s+\d+$", "", text.strip())
+    text = text.replace("［", "[").replace("］", "]").replace("．", ".")
+    text = re.sub(r"(?:\t|\s+|\.{2,}|。{2,}|…{2,})\s*\d+$", "", text.strip())
+    # WPS 目录常把编号、空格和中文标点处理得与正文不同，比较时只保留标题主体。
+    text = re.sub(r"^(?:第\s*[一二三四五六七八九十百零]+\s*章|\d+(?:\.\d+)*|[一二三四五六七八九十百零]+)[、.．]\s*", "", text)
     return re.sub(r"\s+", "", text)
 
 
@@ -217,6 +220,41 @@ def _footnote_info(path: Path):
         return {"references": len(refs), "notes": len(notes)}
 
 
+def _header_footer_xml_text(path: Path):
+    with ZipFile(path) as z:
+        result = []
+        for name in z.namelist():
+            if re.match(r"word/(header|footer)\d+\.xml$", name):
+                root = etree.fromstring(z.read(name))
+                text = "".join(root.xpath("//w:t/text()", namespaces=NS)).strip()
+                if text:
+                    result.append(text)
+        return result
+
+
+def _textbox_xml_text(path: Path):
+    """读取 WPS 用文本框/形状承载的页眉页脚文字。"""
+    with ZipFile(path) as z:
+        result = []
+        for name in z.namelist():
+            if name.startswith("word/") and name.endswith(".xml"):
+                try:
+                    root = etree.fromstring(z.read(name))
+                except Exception:
+                    continue
+                for box in root.xpath("//*[local-name()='txbxContent']"):
+                    text = "".join(box.xpath(".//w:t/text()", namespaces=NS)).strip()
+                    if text:
+                        result.append(text)
+        return result
+
+
+def _header_footer_assets(path: Path):
+    with ZipFile(path) as z:
+        return [n for n in z.namelist() if re.match(r"word/(header|footer)\d+\.xml\.rels$", n)
+                and b"/media/" in z.read(n)]
+
+
 class ThesisAnalyzer:
     def __init__(self, template_path: str | Path, paper_path: str | Path):
         self.template_path = Path(template_path)
@@ -229,6 +267,7 @@ class ThesisAnalyzer:
         self.issues: list[Issue] = []
         self.template_styles = _style_reference(self.template)
         self.template_heading_texts = self._template_heading_texts()
+        self.template_text_rules = any(re.search(r"(一级|二级|三级|四级|正文|页眉|页脚).{0,30}(字体|字号|加粗|居中|缩进|目录)", p.text, re.I) for p in self.template.paragraphs)
         self.template_comment_count = len(_comments_safe(self.template_docx_path))
 
     def _docx_path(self, path: Path):
@@ -268,6 +307,7 @@ class ThesisAnalyzer:
         self.issues.clear()
         self._sections()
         self._headings()
+        self._body_styles()
         self._toc()
         self._captions()
         self._citations()
@@ -301,7 +341,11 @@ class ThesisAnalyzer:
                              section.footer, section.first_page_footer, section.even_page_footer):
                     out.extend(p.text.strip() for p in part.paragraphs if p.text.strip())
             return out
-        t, p = texts(self.template), texts(self.paper)
+        t = list(dict.fromkeys(texts(self.template) + _header_footer_xml_text(self.template_docx_path) + _textbox_xml_text(self.template_docx_path)))
+        p = list(dict.fromkeys(texts(self.paper) + _header_footer_xml_text(self.paper_docx_path) + _textbox_xml_text(self.paper_docx_path)))
+        ta, pa = _header_footer_assets(self.template_docx_path), _header_footer_assets(self.paper_docx_path)
+        if ta and not pa:
+            self.add("警告", "页眉页脚", "页眉页脚", "模板页眉页脚包含图片或Logo，论文未识别到", "未识别", "应保留页眉页脚图片/Logo", "检查页眉图片是否被删除或转为浮动对象。")
         if t and not p:
             self.add("警告", "页眉页脚", "页眉页脚", "模板包含页眉或页脚文字，论文未识别到", "未识别", "应保留模板页眉页脚文字", "检查页眉页脚是否被删除或转为图片。")
         elif t:
@@ -311,22 +355,28 @@ class ThesisAnalyzer:
 
     def _footnotes(self):
         t, p = _footnote_info(self.template_docx_path), _footnote_info(self.paper_docx_path)
-        if t["notes"] and not p["notes"]:
-            self.add("警告", "脚注", "脚注", "模板存在脚注，论文未识别到脚注", p["notes"], t["notes"], "检查脚注是否被删除；脚注不是正文角标。")
-        elif p["references"] > p["notes"]:
+        # 模板和论文可以采用不同注释制度；只有论文实际出现脚注引用时才检查其完整性。
+        if p["references"] and p["references"] > p["notes"]:
             self.add("警告", "脚注", "脚注", "脚注引用与脚注正文数量不一致", f"引用{p['references']}，正文{p['notes']}", "数量一致", "检查损坏或缺失的脚注定义。")
 
     def _headings(self):
         previous = 0
         counters = {}
+        appendix_mode = False
         for i, p in enumerate(self.paper.paragraphs, 1):
             if not p.text.strip() or _is_toc(p):
                 continue
             level = heading_level(p)
             if not level:
                 continue
+            if re.match(r"^(附录|附件|附表|附图)", p.text.strip()):
+                appendix_mode = True
+            if appendix_mode:
+                # 附录内部按自身内容组织，不与正文标题树混合。
+                previous = level
+                continue
             loc = f"段落{i}：{p.text.strip()[:35]}"
-            if previous and level > previous + 1:
+            if previous and level > previous + 1 and level != 4:
                 self.add("严重", "标题层级", loc, "标题层级发生跳级", f"上一级为{previous}级，本段为{level}级", "层级逐级递进", "检查是否缺少中间层级标题或标题级别设置错误。")
             previous = level
             expected = self.template_styles.get(level)
@@ -340,7 +390,7 @@ class ThesisAnalyzer:
                     if av is not None and ev is not None and (isinstance(av, (int,float)) and isinstance(ev, (int,float)) and abs(av-ev) > 0.08 or av != ev):
                         mismatches.append(key)
                 af, ef = actual.get("font", {}), expected.get("font", {})
-                for key in ["east_asia", "size_pt", "bold"]:
+                for key in ["latin", "east_asia", "size_pt", "bold", "italic"]:
                     if af.get(key) is not None and ef.get(key) is not None and af.get(key) != ef.get(key):
                         mismatches.append("字体." + key)
                 # 已明确设置 Word 大纲级别时，样式名不再作为判定依据；避免“样式不同但大纲正确”的误报。
@@ -364,9 +414,44 @@ class ThesisAnalyzer:
                     self.add("警告", "标题编号", loc, "同级标题编号可能不连续", parts[-1], last + 1, "核对是否漏号、重号或跨章节沿用了旧编号。")
                 counters[key] = parts[-1]
 
+    def _body_styles(self):
+        """比较正文段落的常用样式属性，不把附录和目录混入正文。"""
+        candidates = [p for p in self.template.paragraphs if p.text.strip() and not _is_toc(p) and not heading_level(p)]
+        if not candidates:
+            return
+        expected = _paragraph_signature(candidates[0])
+        checked = 0
+        for i, p in enumerate(self.paper.paragraphs, 1):
+            if checked >= 80 or not p.text.strip() or _is_toc(p) or heading_level(p):
+                continue
+            actual = _paragraph_signature(p)
+            diffs = []
+            for key in ("alignment", "first_line_indent_cm", "space_before_pt", "space_after_pt", "line_spacing"):
+                av, ev = actual.get(key), expected.get(key)
+                if av is not None and ev is not None and av != ev:
+                    diffs.append(key)
+            af, ef = actual.get("font", {}), expected.get("font", {})
+            for key in ("size_pt", "bold", "italic", "east_asia"):
+                if af.get(key) is not None and ef.get(key) is not None and af.get(key) != ef.get(key):
+                    diffs.append("字体." + key)
+            if diffs:
+                self.add("警告", "正文段落样式", f"段落{i}", "正文段落样式与模板不一致", "、".join(diffs), "模板正文常用段落样式", "按模板正文段落的字体、缩进、对齐和间距调整。")
+            checked += 1
+
     def _toc(self):
         toc = [_normalize_heading(p.text) for p in self.paper.paragraphs if _is_toc(p) and p.text.strip()]
-        headings = [_normalize_heading(p.text) for p in self.paper.paragraphs if heading_level(p) and not _is_toc(p)]
+        headings = []
+        appendix_mode = False
+        for p in self.paper.paragraphs:
+            if not p.text.strip() or _is_toc(p):
+                continue
+            level = heading_level(p)
+            if not level:
+                continue
+            if re.match(r"^(附录|附件|附表|附图)", p.text.strip()):
+                appendix_mode = True
+            if not appendix_mode:
+                headings.append(_normalize_heading(p.text))
         if not toc:
             self.add("严重", "目录", "目录", "未识别到目录条目", "无", "目录应与正文标题对应", "插入或更新 Word 自动目录。")
             return
@@ -411,21 +496,25 @@ class ThesisAnalyzer:
     def _citations(self):
         # 参考文献表和目录中的编号不是正文引用；只在正文部分识别。
         paragraphs = list(self.paper.paragraphs)
-        ref_start = next((i for i,p in enumerate(paragraphs) if p.text.strip() in {"参考文献", "参考文献表"}), len(paragraphs))
+        ref_start = next((i for i,p in enumerate(paragraphs) if p.text.strip() in {"参考文献", "参考文献表", "References"}), len(paragraphs))
         # 没有独立“参考文献”标题时，以连续的 [1]、[2] 条目定位文末参考文献区。
-        first_ref = next((i for i,p in enumerate(paragraphs) if re.match(r"^\s*\[1\]\s*", p.text)), len(paragraphs))
-        if first_ref < ref_start:
+        def plain(s):
+            return s.replace("［", "[").replace("］", "]").replace("﹝", "[").replace("﹞", "]")
+        first_ref = next((i for i,p in enumerate(paragraphs) if re.match(r"^\s*\[\s*1\s*\]\s*", plain(p.text))), len(paragraphs))
+        if first_ref < ref_start and first_ref > 0:
             ref_start = first_ref
         body = paragraphs[:ref_start]
         text = "\n".join(p.text for p in body if not _is_toc(p))
         refs = []
         for p in paragraphs[ref_start:]:
-            m = re.match(r"^\s*\[(\d+)\]\s*", p.text)
+            m = re.match(r"^\s*\[\s*(\d+)\s*\]\s*", plain(p.text))
             if m:
                 refs.append(int(m.group(1)))
         cites = []
         # 必须位于正文语境中：方括号内为数字且前后不是参考文献条目/目录页码。
-        for m in re.finditer(r"(?<![A-Za-z])\[(\d+(?:\s*[-—,，]\s*\d+)*)\](?!\d)", text):
+        text = plain(text)
+        # 兼容 WPS 全角括号、括号内空格及跨 run 后形成的常见变体。
+        for m in re.finditer(r"(?<![A-Za-z0-9])\[\s*(\d+(?:\s*[-—,，]\s*\d+)*)\s*\](?!\d)", text):
             raw = m.group(1)
             for n in re.findall(r"\d+", raw):
                 cites.append(int(n))
@@ -455,6 +544,8 @@ class ThesisAnalyzer:
         severe = sum(1 for x in self.issues if x.severity == "严重")
         warnings = sum(1 for x in self.issues if x.severity == "警告")
         self.add("提示", "检查状态", "检查摘要", "模板已读取；教师批注已读取；格式检查结论：" + ("不合格" if severe or warnings else "合格"), f"严重{severe}，警告{warnings}", "严重和警告均为0时合格", "优先处理严重问题，再处理警告；提示项用于人工复核。")
+        if self.template_text_rules and not self.template_styles:
+            self.add("提示", "模板解析", "模板", "已读取文字说明型模板；标题层级按论文大纲级别/编号识别", "文字规范", "按文字说明执行", "WPS 中请为标题设置大纲级别，目录字体变化不会影响结构识别。")
 
 
 def summary(issues: Iterable[Issue]):
