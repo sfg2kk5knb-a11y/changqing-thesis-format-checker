@@ -1,0 +1,31 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "quotation-system/**"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: quotation-system
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install pyinstaller pillow
+
+      - run: pyinstaller --noconfirm --clean --onefile --windowed --name 常青文创设计报价系统 --add-data "LOGO.png;." quotation_app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 常青文创设计报价系统-Windows
+          path: quotation-system/dist/常青文创设计报价系统.exe
