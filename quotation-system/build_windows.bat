@@ -8,7 +8,8 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist dist mkdir dist
-pyinstaller --noconfirm --clean --onefile --windowed --name 常青文创设计报价系统 --add-data "LOGO.png;." quotation_app.py
+python -c "from PIL import Image; Image.open('LOGO.png').convert('RGBA').save('LOGO.ico',sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+pyinstaller --noconfirm --clean --onefile --windowed --icon "LOGO.ico" --name 常青文创设计报价系统 --add-data "LOGO.png;." quotation_app.py
 copy /Y "报价设置.json" "dist\报价设置.json" >nul 2>nul
 echo 已生成 dist\常青文创设计报价系统.exe
 pause

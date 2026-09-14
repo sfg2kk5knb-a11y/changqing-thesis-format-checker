@@ -32,7 +32,9 @@ class App(tk.Tk):
         try:
             from PIL import Image, ImageTk
             p=os.path.join(BASE_DIR,'LOGO.png')
-            if os.path.exists(p): self.logo=ImageTk.PhotoImage(Image.open(p).resize((310,92)))
+            if os.path.exists(p):
+                im=Image.open(p).convert('RGBA'); im.thumbnail((310,92)); self.logo=ImageTk.PhotoImage(im)
+                wm=Image.open(p).convert('RGBA'); wm.thumbnail((430,430)); wm.putalpha(wm.getchannel('A').point(lambda x:int(x*0.10))); self.watermark=ImageTk.PhotoImage(wm)
         except Exception: pass
         self.build()
     def build(self):
@@ -42,18 +44,25 @@ class App(tk.Tk):
         else: ttk.Label(top,text=APP_NAME,style='Header.TLabel').pack(side='left',padx=28)
         tk.Label(top,text='专业 · 高效 · 明细透明',bg='#10275b',fg='#dbe6ff',font=('Microsoft YaHei',11)).pack(side='right',padx=32)
         body=tk.Frame(self,bg='#f4f7fb'); body.pack(fill='both',expand=True,padx=25,pady=20)
+        if hasattr(self,'watermark'): tk.Label(body,image=self.watermark,bg='#f4f7fb',borderwidth=0).place(relx=.74,rely=.54,anchor='center')
         left=ttk.LabelFrame(body,text='报价信息',style='Card.TLabelframe',padding=18); left.pack(side='left',fill='y',padx=(0,15)); right=ttk.LabelFrame(body,text='报价明细',style='Card.TLabelframe',padding=18); right.pack(side='left',fill='both',expand=True)
-        self.kind=tk.StringVar(value='外包单'); ttk.Label(left,text='报价类型').pack(anchor='w'); f=tk.Frame(left,bg='white'); f.pack(anchor='w',pady=8); ttk.Radiobutton(f,text='外包单（最低价）',variable=self.kind,value='外包单').pack(side='left'); ttk.Radiobutton(f,text='一手单（翻倍）',variable=self.kind,value='一手单').pack(side='left',padx=10)
+        self.kind=tk.StringVar(value='外包单'); ttk.Label(left,text='报价类型').pack(anchor='w'); f=tk.Frame(left,bg='white'); f.pack(anchor='w',pady=8); ttk.Radiobutton(f,text='外包单',variable=self.kind,value='外包单').pack(side='left'); ttk.Radiobutton(f,text='一手单',variable=self.kind,value='一手单').pack(side='left',padx=10)
         ttk.Label(left,text='学历类型').pack(anchor='w',pady=(12,3)); self.edu=ttk.Combobox(left,values=list(self.cfg['education']),state='readonly',width=25); self.edu.current(0); self.edu.pack(anchor='w')
         ttk.Label(left,text='字数（千字）').pack(anchor='w',pady=(15,3)); self.words=ttk.Entry(left,width=27); self.words.insert(0,'10'); self.words.pack(anchor='w')
         ttk.Label(left,text='附加服务（可多选）').pack(anchor='w',pady=(18,3)); self.vars={}
         for n in self.cfg['services']:
-            v=tk.BooleanVar(); self.vars[n]=v; ttk.Checkbutton(left,text=n,variable=v).pack(anchor='w',pady=2)
+            v=tk.BooleanVar(); self.vars[n]=v; cb=tk.Checkbutton(left,text='☐  '+n,variable=v,indicatoron=False,anchor='w',width=24,bd=0,relief='flat',bg='white',activebackground='white',font=('Microsoft YaHei',10),command=lambda n=n:self.toggle_check(n)); cb.pack(anchor='w',pady=2); self.vars[n+'_widget']=cb
         bf=tk.Frame(left,bg='#f4f7fb'); bf.pack(fill='x',pady=(25,0)); ttk.Button(bf,text='开始计算',command=self.calculate).pack(side='left'); ttk.Button(bf,text='清空',command=self.clear).pack(side='left',padx=8)
         ttk.Button(left,text='价格设置',command=self.settings).pack(anchor='w',pady=12)
         self.detail=tk.Text(right,font=('Microsoft YaHei',12),bg='white',relief='flat',padx=12,pady=12,state='disabled'); self.detail.pack(fill='both',expand=True)
         self.copybtn=ttk.Button(right,text='复制报价结果',command=self.copy_result,state='disabled'); self.copybtn.pack(anchor='e',pady=(12,0)); self.result=''
-    def clear(self): self.words.delete(0,'end'); self.words.insert(0,'10'); [v.set(False) for v in self.vars.values()]; self.show('')
+    def clear(self):
+        self.words.delete(0,'end'); self.words.insert(0,'10')
+        for n,v in self.vars.items():
+            if isinstance(v,tk.BooleanVar): v.set(False)
+        for n in self.cfg['services']: self.vars[n+'_widget'].config(text='☐  '+n)
+        self.show('')
+    def toggle_check(self,n): self.vars[n+'_widget'].config(text=('☑  ' if self.vars[n].get() else '☐  ')+n)
     def show(self,s): self.detail.config(state='normal'); self.detail.delete('1.0','end'); self.detail.insert('1.0',s); self.detail.config(state='disabled')
     def calculate(self):
         try: w=float(self.words.get().strip())
