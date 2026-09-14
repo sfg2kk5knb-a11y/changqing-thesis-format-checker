@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox, simpledialog
 PASSWORD = 'changqingwenchuang'
 APP_NAME = '常青文创设计报价系统'
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+RESOURCE_DIR = getattr(sys, '_MEIPASS', BASE_DIR)
 CONFIG = os.path.join(BASE_DIR, '报价设置.json')
 
 DEFAULT = {
@@ -31,11 +32,13 @@ class App(tk.Tk):
         self.cfg=load_cfg(); self.configure(bg='#f4f7fb'); self.logo=None
         try:
             from PIL import Image, ImageTk
-            p=os.path.join(BASE_DIR,'LOGO.png')
+            p=os.path.join(RESOURCE_DIR,'LOGO.png')
             if os.path.exists(p):
                 im=Image.open(p).convert('RGBA'); im.thumbnail((310,92)); self.logo=ImageTk.PhotoImage(im)
-                wm=Image.open(p).convert('RGBA'); wm.thumbnail((430,430)); wm.putalpha(wm.getchannel('A').point(lambda x:int(x*0.10))); self.watermark=ImageTk.PhotoImage(wm)
+                self.icon=ImageTk.PhotoImage(Image.open(p).convert('RGBA').resize((64,64)))
+                wm=Image.open(p).convert('RGBA'); wm.thumbnail((430,430)); wm.putalpha(wm.getchannel('A').point(lambda x:int(x*0.14))); self.watermark=ImageTk.PhotoImage(wm)
         except Exception: pass
+        if hasattr(self,'icon'): self.iconphoto(True,self.icon)
         self.build()
     def build(self):
         style=ttk.Style(self); style.theme_use('clam'); style.configure('TButton',font=('Microsoft YaHei',11),padding=8); style.configure('TLabel',background='#f4f7fb',font=('Microsoft YaHei',11)); style.configure('Header.TLabel',background='#10275b',foreground='white',font=('Microsoft YaHei',20,'bold')); style.configure('Card.TLabelframe',background='white'); style.configure('Card.TLabelframe.Label',background='white',foreground='#10275b',font=('Microsoft YaHei',12,'bold'))
@@ -44,7 +47,7 @@ class App(tk.Tk):
         else: ttk.Label(top,text=APP_NAME,style='Header.TLabel').pack(side='left',padx=28)
         tk.Label(top,text='专业 · 高效 · 明细透明',bg='#10275b',fg='#dbe6ff',font=('Microsoft YaHei',11)).pack(side='right',padx=32)
         body=tk.Frame(self,bg='#f4f7fb'); body.pack(fill='both',expand=True,padx=25,pady=20)
-        if hasattr(self,'watermark'): tk.Label(body,image=self.watermark,bg='#f4f7fb',borderwidth=0).place(relx=.74,rely=.54,anchor='center')
+        if hasattr(self,'watermark'): tk.Label(top,image=self.watermark,bg='#10275b',borderwidth=0).place(relx=.73,rely=.5,anchor='center')
         left=ttk.LabelFrame(body,text='报价信息',style='Card.TLabelframe',padding=18); left.pack(side='left',fill='y',padx=(0,15)); right=ttk.LabelFrame(body,text='报价明细',style='Card.TLabelframe',padding=18); right.pack(side='left',fill='both',expand=True)
         self.kind=tk.StringVar(value='外包单'); ttk.Label(left,text='报价类型').pack(anchor='w'); f=tk.Frame(left,bg='white'); f.pack(anchor='w',pady=8); ttk.Radiobutton(f,text='外包单',variable=self.kind,value='外包单').pack(side='left'); ttk.Radiobutton(f,text='一手单',variable=self.kind,value='一手单').pack(side='left',padx=10)
         ttk.Label(left,text='学历类型').pack(anchor='w',pady=(12,3)); self.edu=ttk.Combobox(left,values=list(self.cfg['education']),state='readonly',width=25); self.edu.current(0); self.edu.pack(anchor='w')
@@ -71,8 +74,8 @@ class App(tk.Tk):
         if not p: messagebox.showwarning('价格提示','当前学历暂无基础价格。'); return
         base=w*p[0]; lines=[f'报价类型：{self.kind.get()}',f'学历类型：{self.edu.get()}',f'字数：{w:g} 千字',f'基础单价：{p[0]:g} 元/千字',f'基础费用：{base:.2f} 元','']
         total=base
-        for n,v in self.vars.items():
-            if v.get():
+        for n in self.cfg['services']:
+            if self.vars[n].get():
                 sp=parse_price(self.cfg['services'][n]); fee=sp[0] if sp else 0; total+=fee; lines.append(f'{n}：{fee:.2f} 元')
         lines += ['',f'附加服务合计：{total-base:.2f} 元']
         if self.kind.get()=='一手单': total*=float(self.cfg.get('multiplier',2)); lines.append(f'一手单倍数：×{self.cfg.get("multiplier",2)}')
