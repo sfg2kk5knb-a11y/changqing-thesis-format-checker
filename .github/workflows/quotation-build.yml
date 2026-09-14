@@ -18,11 +18,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: python -m pip install pyinstaller pillow
+      - name: Install dependencies
+        run: python -m pip install pyinstaller pillow
 
-      - run: pyinstaller --noconfirm --clean --onefile --windowed --name 常青文创设计报价系统 --add-data "LOGO.png;." quotation_app.py
+      - name: Create logo icon
+        run: python -c "from PIL import Image; Image.open('LOGO.png').convert('RGBA').save('LOGO.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+
+      - name: Build quotation software
+        run: pyinstaller --noconfirm --clean --onefile --windowed --icon "LOGO.ico" --name 常青文创设计系统 --add-data "LOGO.png;." quotation_app.py
 
       - uses: actions/upload-artifact@v4
         with:
-          name: 常青文创设计报价系统-Windows
-          path: quotation-system/dist/常青文创设计报价系统.exe
+          name: 常青文创设计系统-Windows-新版
+          path: quotation-system/dist/常青文创设计系统.exe
